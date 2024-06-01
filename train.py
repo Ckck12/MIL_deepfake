@@ -30,7 +30,8 @@ def train_model(train_loader, val_loader, model, criterion, optimizer, num_epoch
             try:
                 # print(videos.shape)
                 outputs, _ = model(videos) # BF x 1 -> B x F x 1
-                loss = criterion(outputs, labels)
+                weights = torch.tensor([1 if label == 1 else 0 for label in labels]).to(device)
+                loss = criterion(outputs, labels, weights)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -77,7 +78,9 @@ def validate_model(val_loader, model, criterion, device):
             videos, labels = videos.to(device), labels.to(device).float()
             try:
                 outputs, _ = model(videos)
-                loss = criterion(outputs, labels)
+                weights = torch.tensor([1 if label == 1 else 0 for label in labels]).to(device)
+                # outputs = outputs.to(device)
+                loss = criterion(outputs, labels, weights)
                 val_loss += loss.item() 
                 predicted = (outputs > 0.5).float()
                 total += labels.size(0)

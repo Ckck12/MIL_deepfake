@@ -11,17 +11,17 @@ from tqdm import tqdm
 def main():
     train_base_path = '/media/NAS/DATASET/1mDFDC/video_level_1mdfdc/training_set/Small_DFDC'
     test_base_path = '/media/NAS/DATASET/1mDFDC/video_level_1mdfdc/validation_set/Test_DFDC'
-    batch_size = 4
+    batch_size = 6
     num_epochs = 15
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_workers = 32
     pin_memory = True
     shuffle = False
     validation_split = 0.1
-    train_limit = 5000
+    train_limit = 200
 
     transform = transforms.Compose([
-        transforms.Resize((180, 180)),
+        transforms.Resize((70, 70 )),
         transforms.ToTensor()
     ])
 

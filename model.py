@@ -199,6 +199,6 @@ class SMILModel(nn.Module):
         return final_bag_prediction, aij
 
 # S-MIL Loss Function
-def smil_loss(y_pred, y_true):
-    loss = nn.BCELoss()
+def smil_loss(y_pred, y_true, weights):
+    loss = nn.BCELoss(weight=weights)
     return loss(y_pred, y_true)

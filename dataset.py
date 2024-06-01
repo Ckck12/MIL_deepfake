@@ -7,7 +7,7 @@ from torchvision import transforms
 from PIL import Image, UnidentifiedImageError
 
 class DeepFakeDataset(Dataset):
-    def __init__(self, base_path, transform=None, frame_limit=52, train_limit=None):
+    def __init__(self, base_path, transform=None, frame_limit=200, train_limit=None):
         self.base_path = base_path
         self.transform = transform
         self.frame_limit = frame_limit
