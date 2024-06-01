@@ -4,21 +4,21 @@ import torch.optim as optim
 import torch.nn as nn
 from torchvision import transforms
 from dataset import get_dataloader
-from model_shahid import FrameFeatureExtractor, SMILModel, smil_loss
-from train_shahid import train_model
+from model import FrameFeatureExtractor, SMILModel, smil_loss
+from train import train_model
 from evaluate import evaluate_model, save_results, save_frame_importances
 from tqdm import tqdm
 def main():
-    train_base_path = '/home/parkchan/Small_DFDC'
+    train_base_path = '/media/NAS/DATASET/1mDFDC/video_level_1mdfdc/training_set/Small_DFDC'
     test_base_path = '/media/NAS/DATASET/1mDFDC/video_level_1mdfdc/validation_set/Test_DFDC'
     batch_size = 4
-    num_epochs = 13
+    num_epochs = 15
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_workers = 32
     pin_memory = True
     shuffle = False
     validation_split = 0.1
-    train_limit = 10000
+    train_limit = 5000
 
     transform = transforms.Compose([
         transforms.Resize((180, 180)),

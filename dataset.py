@@ -7,7 +7,7 @@ from torchvision import transforms
 from PIL import Image, UnidentifiedImageError
 
 class DeepFakeDataset(Dataset):
-    def __init__(self, base_path, transform=None, frame_limit=48, train_limit=None):
+    def __init__(self, base_path, transform=None, frame_limit=52, train_limit=None):
         self.base_path = base_path
         self.transform = transform
         self.frame_limit = frame_limit
@@ -23,13 +23,17 @@ class DeepFakeDataset(Dataset):
             frames = sorted(glob.glob(os.path.join(folder_path, '*.png')))
             if frames:
                 frames = frames[10:]  # 처음 10프레임 삭제
-                frames = frames[:-10]  # 마지막 6프레임 제외
+                frames = frames[:-10]  # 마지막 10프레임 제외
                 selected_frames = self.select_frames(frames)
+                if len(selected_frames) == 0:
+                    print(f"Warning: No frames left after selection in folder {video_folder}")
+                    continue  # 프레임이 0개인 경우 이 비디오 로드하지 않음
                 label = 1 if 'fake' in video_folder.lower() else 0
                 self.data.append((selected_frames, label))
                 self.video_names.append(video_folder)
             else:
                 print(f"Warning: No frames found in folder {video_folder}")
+
         print(f"총 {len(self.data)}개의 비디오가 로드되었습니다.")
 
     def select_frames(self, frames):
@@ -44,6 +48,7 @@ class DeepFakeDataset(Dataset):
         frames, label = self.data[idx]
         video_name = self.video_names[idx]
         images = []
+        
         for frame in frames:
             try:
                 image = Image.open(frame).convert('RGB')
@@ -54,7 +59,7 @@ class DeepFakeDataset(Dataset):
                 print(f"Warning: Unable to load frame {frame}: {e}")
                 continue
         if not images:
-            raise ValueError(f"Error: No valid images found for index {idx}-{video_name} - {frames}")
+            raise ValueError(f"Error: No valid images found for index {idx} - {video_name} - {frames}")
 
         # 프레임이 부족한 경우 패딩 추가
         if len(images) < self.frame_limit:

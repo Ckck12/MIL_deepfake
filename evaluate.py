@@ -3,6 +3,8 @@ import numpy as np
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, recall_score, precision_score
 import pandas as pd
 import datetime
+
+# 현재 시간을 전역 변수로 설정
 now = datetime.datetime.now()
 now_str = now.strftime('%Y%m%d_%H%M%S')
 
@@ -27,14 +29,13 @@ def evaluate_model(dataloader, model, device):
             confidences.append(confidence)
             predictions.append(prediction)
             labels.append(label.cpu().numpy())
-            video_names.append(video_name)
+            video_names.extend(video_name)  # 비디오 이름 리스트 평탄화
             frame_importances.append(aij.squeeze().cpu().numpy().tolist())
     
     # 리스트의 리스트를 평탄화
     confidences_flat = np.concatenate(confidences)
     predictions_flat = np.concatenate(predictions)
     labels_flat = np.concatenate(labels)
-    video_names_flat = [item for sublist in video_names for item in sublist]
 
     # 성능 지표 계산
     acc = accuracy_score(labels_flat, predictions_flat)
@@ -57,19 +58,16 @@ def evaluate_model(dataloader, model, device):
         'Precision': precision
     }
 
-    return metrics, confidences_flat.tolist(), predictions_flat.tolist(), labels_flat.tolist(), video_names_flat, frame_importances
+    return metrics, confidences_flat.tolist(), predictions_flat.tolist(), labels_flat.tolist(), video_names, frame_importances
 
-def save_results(confidences, predictions, labels, video_names, frame_importances):
+def save_results(confidences, predictions, labels, video_names,frame_importances):
     results = pd.DataFrame({
         'video_name': video_names,
         'confidence': confidences,
         'prediction': predictions,
-        'label': labels,
-        # 'frame_importances': frame_importances
+        'label': labels
     })
     results.to_csv(f'{now_str}_results.csv', index=False)
-
-
 
 def save_frame_importances(video_names, frame_importances):
     # Create a dictionary to store frame importances for each video
