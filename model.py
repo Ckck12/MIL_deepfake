@@ -3,34 +3,39 @@
 # import torch.nn.functional as F
 # import timm
 
-# # Frame Feature Extractor
+# def replace_nan_to_zero(tensor):
+#     if tensor.isnan().any():
+#         tensor[tensor.isnan()] = 0.0000000001
+#     return tensor
+
 # class FrameFeatureExtractor(nn.Module):
-#     def __init__(self):
+#     def __init__(self, weight_path):
 #         super(FrameFeatureExtractor, self).__init__()
-#         self.model = timm.create_model('legacy_xception', pretrained=True)
-#         self.model.fc = nn.Identity()  # 마지막 FC 레이어 제거
+#         self.model = timm.create_model('tf_efficientnet_b7_ns', pretrained=False)
         
+#         # Load the weights from the provided path
+#         checkpoint = torch.load(weight_path)
+#         weights = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+
+#         # Remove 'encoder.' or 'module.encoder.' prefix if exists
+#         weights = {k.replace('encoder.', '').replace('module.', ''): v for k, v in weights.items() if 'epoch' not in k and 'bce_best' not in k}
+
+#         weights.pop("fc.weight", None)
+#         weights.pop("fc.bias", None)
+        
+#         # Load the weights into the model
+#         self.model.load_state_dict(weights, strict=True)
+        
+#         # Remove the final classification layer
+#         self.model.classifier = nn.Identity()
+
 #     def forward(self, x):
-#         return self.model(x)
+#         x = self.model(x)
+#         x = replace_nan_to_zero(x)  # NaN 처리
+#         return x
 
-# # Temporal Analyzer
-# class TemporalAnalyzer(nn.Module):
-#     def __init__(self, input_size=512):
-#         super(TemporalAnalyzer, self).__init__()
-#         self.lstm = nn.LSTM(input_size=input_size, hidden_size=128, num_layers=1, batch_first=True)
-#         self.dropout = nn.Dropout(0.5)
-#         self.fc = nn.Linear(128, 128)
-
-#     def forward(self, x):
-#         self.lstm.flatten_parameters()
-#         lstm_out, _ = self.lstm(x)
-#         lstm_out = self.dropout(lstm_out)
-#         output = self.fc(lstm_out)
-#         return output
-
-# # Spatial-Temporal Encoding
 # class SpatialTemporalEncoding(nn.Module):
-#     def __init__(self, input_size=2048):
+#     def __init__(self, input_size=2560):  # EfficientNet-B7 output size
 #         super(SpatialTemporalEncoding, self).__init__()
 #         self.conv1d_k1 = nn.Conv1d(input_size, 512, kernel_size=1, padding=0)
 #         self.conv1d_k2 = nn.Conv1d(input_size, 512, kernel_size=3, padding=1)
@@ -43,58 +48,154 @@
 #         x_k3 = self.relu(self.conv1d_k3(x))
 #         return x_k1, x_k2, x_k3
 
-# # S-MIL Model
 # class SMILModel(nn.Module):
-#     def __init__(self, frame_feature_extractor, temporal_analyzer):
+#     def __init__(self, frame_feature_extractor):
 #         super(SMILModel, self).__init__()
 #         self.frame_feature_extractor = frame_feature_extractor
-#         self.temporal_analyzer = temporal_analyzer
-#         self.spatial_temporal_encoding = SpatialTemporalEncoding(input_size=2048)
-#         self.fc1 = nn.Linear(384, 512)  # Changed to 512*3 for combined_encoded
-#         self.weight_fc = nn.Linear(512, 1)  # 가중치 계산을 위한 FC 레이어
+#         self.spatial_temporal_encoding = SpatialTemporalEncoding(input_size=2560)
+#         self.fc_alpha = nn.Linear(512 * 3, 1)  # For calculating alpha
+#         self.fc_p = nn.Linear(512 * 3, 1)  # For calculating p_i^j
+#         nn.init.xavier_uniform_(self.fc_alpha.weight)
+#         nn.init.xavier_uniform_(self.fc_p.weight)
+
+#     def forward(self, x):
+#         batch_size, num_frames, c, h, w = x.size()  # (batch, num_frames, channels, height, width)
+
+#         frame_features_list = []
+#         for i in range(batch_size):
+#             frame_features = self.frame_feature_extractor(x[i])  # Extract frame features for each video
+#             frame_features_list.append(frame_features)
+        
+#         frame_features = torch.stack(frame_features_list)  # Combine frame features into a single tensor
+#         frame_features = frame_features.view(batch_size, num_frames, -1)  # Reshape to (batch, num_frames, feature_size)
+#         frame_features = replace_nan_to_zero(frame_features)
+        
+#         # Spatial-Temporal Encoding
+#         x_k1, x_k2, x_k3 = self.spatial_temporal_encoding(frame_features.permute(0, 2, 1))  # (batch, feature_size, num_frames)
+
+#         # Concatenate encoded features along the feature dimension (i.e., dim=1)
+#         combined_encoded = torch.cat((x_k1, x_k2, x_k3), dim=1)  # (batch, 512*3, num_frames)
+#         combined_encoded = replace_nan_to_zero(combined_encoded)
+
+#         # Calculate alpha_ij (weights for instances)
+#         alpha_logits = self.fc_alpha(combined_encoded.permute(0, 2, 1))  # (batch, num_frames, 1)
+#         aij = F.softmax(alpha_logits, dim=1).permute(0, 2, 1)  # (batch, 1, num_frames)
+
+#         # Calculate fake scores for each frame
+#         p_i_j_logits = self.fc_p(combined_encoded.permute(0, 2, 1))  # (batch, num_frames, 1)
+#         p_i_j = torch.sigmoid(p_i_j_logits).squeeze(2)  # (batch, num_frames)
+
+#         # Calculate final bag prediction using proposed method
+#         weighted_p_i_j = torch.prod((1 / p_i_j - 1).pow(aij.squeeze()), dim=1)
+
+#         # bag prediction이 0과 1사이가 아니라면 이번 데이터는 학습시키지 말고 다음 데이터로 넘어가도록 하기 
+#         bag_prediction = 1 / (1 + weighted_p_i_j)  # (batch)
+        
+#         if bag_prediction.isnan().any() or ((bag_prediction < 0) | (bag_prediction > 1)).any():
+#             raise ValueError("Invalid bag_prediction values")
+        
+#         return bag_prediction, aij
+
+# # S-MIL Loss Function
+# def smil_loss(y_pred, y_true):
+#     loss = nn.BCELoss()
+#     return loss(y_pred, y_true)
+# --------------------------------------------------------------------------------------------------------------------
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+# import timm
+
+# def replace_nan_to_zero(tensor):
+#     if tensor.isnan().any():
+#         tensor[tensor.isnan()] = 0.0000000001
+#     return tensor
+
+# class FrameFeatureExtractor(nn.Module):
+#     def __init__(self, weight_path):
+#         super(FrameFeatureExtractor, self).__init__()
+#         self.model = timm.create_model('tf_efficientnet_b7_ns', pretrained=False)
+        
+#         # Load the weights from the provided path
+#         checkpoint = torch.load(weight_path)
+#         weights = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+
+#         # Remove 'encoder.' or 'module.encoder.' prefix if exists
+#         weights = {k.replace('encoder.', '').replace('module.', ''): v for k, v in weights.items() if 'epoch' not in k and 'bce_best' not in k}
+
+#         weights.pop("fc.weight", None)
+#         weights.pop("fc.bias", None)
+        
+#         # Load the weights into the model
+#         self.model.load_state_dict(weights, strict=True)
+        
+#         # Remove the final classification layer
+#         self.model.classifier = nn.Identity()
+
+#     def forward(self, x):
+#         x = self.model(x)
+#         x = replace_nan_to_zero(x)
+#         return x
+
+# class SpatialTemporalEncoding(nn.Module):
+#     def __init__(self, input_size=2560):  # EfficientNet-B7 output size
+#         super(SpatialTemporalEncoding, self).__init__()
+#         self.conv1d_k1 = nn.Conv1d(input_size, 512, kernel_size=1, padding=0)
+#         self.conv1d_k2 = nn.Conv1d(input_size, 512, kernel_size=2, padding=1)
+#         self.conv1d_k3 = nn.Conv1d(input_size, 512, kernel_size=3, padding=1)
+#         self.relu = nn.ReLU()
+
+#     def forward(self, x):
+#         x_k1 = self.relu(self.conv1d_k1(x))
+#         x_k2 = self.relu(self.conv1d_k2(x))
+#         x_k3 = self.relu(self.conv1d_k3(x))
+#         return x_k1, x_k2, x_k3
+
+# class SMILModel(nn.Module):
+#     def __init__(self, frame_feature_extractor):
+#         super(SMILModel, self).__init__()
+#         self.frame_feature_extractor = frame_feature_extractor
+#         self.spatial_temporal_encoding = SpatialTemporalEncoding(input_size=2560)
+#         self.fc_alpha = nn.Linear(512, 1)
+#         self.fc_p = nn.Linear(512, 1)
+#         nn.init.xavier_uniform_(self.fc_alpha.weight)
+#         nn.init.xavier_uniform_(self.fc_p.weight)
 
 #     def forward(self, x):
 #         batch_size, num_frames, c, h, w = x.size()
-#         x = x.view(-1, c, h, w)
-#         frame_features = self.frame_feature_extractor(x)
-#         frame_features = frame_features.view(batch_size, num_frames, -1)
 
+#         frame_features_list = []
+#         for i in range(batch_size):
+#             frame_features = self.frame_feature_extractor(x[i])
+#             frame_features_list.append(frame_features)
+        
+#         frame_features = torch.stack(frame_features_list)
+#         frame_features = frame_features.view(batch_size, num_frames, -1)
+#         frame_features = replace_nan_to_zero(frame_features)
+        
 #         # Spatial-Temporal Encoding
 #         x_k1, x_k2, x_k3 = self.spatial_temporal_encoding(frame_features.permute(0, 2, 1))
 
-#         # Max Pooling
-#         x_k1 = F.max_pool1d(x_k1, kernel_size=x_k1.size(2)).squeeze(2)
-#         x_k2 = F.max_pool1d(x_k2, kernel_size=x_k2.size(2)).squeeze(2)
-#         x_k3 = F.max_pool1d(x_k3, kernel_size=x_k3.size(2)).squeeze(2)
+#         bag_predictions = []
+#         for x_k in [x_k1, x_k2, x_k3]:
+#             combined_encoded = replace_nan_to_zero(x_k)
+#             alpha_logits = self.fc_alpha(combined_encoded.permute(0, 2, 1))
+#             aij = F.softmax(alpha_logits, dim=1).permute(0, 2, 1)
 
-#         # 차원 확장 및 결합
-#         x_k1 = x_k1.unsqueeze(1).repeat(1, num_frames, 1)
-#         x_k2 = x_k2.unsqueeze(1).repeat(1, num_frames, 1)
-#         x_k3 = x_k3.unsqueeze(1).repeat(1, num_frames, 1)
+#             p_i_j_logits = self.fc_p(combined_encoded.permute(0, 2, 1))
+#             p_i_j = torch.sigmoid(p_i_j_logits).squeeze(2)
 
-#         # 시간적 분석
-#         encoded_k1 = self.temporal_analyzer(x_k1)
-#         encoded_k2 = self.temporal_analyzer(x_k2)
-#         encoded_k3 = self.temporal_analyzer(x_k3)
+#             weighted_p_i_j = torch.prod((1 / p_i_j - 1).pow(aij.squeeze()), dim=1)
+#             bag_prediction = 1 / (1 + weighted_p_i_j)
+#             bag_predictions.append(bag_prediction)
+        
+#         # Compute the final prediction using the weighted product aggregation
+#         final_bag_prediction = torch.prod(torch.stack(bag_predictions), dim=0)
 
-#         # 인코딩된 특징 결합
-#         combined_encoded = torch.cat((encoded_k1, encoded_k2, encoded_k3), dim=2)  # (batch_size, num_frames, 384)
-
-#         # 가중치 계산
-#         combined_encoded = combined_encoded.view(batch_size * num_frames, -1)
-#         combined_encoded = F.relu(self.fc1(combined_encoded))
-#         aij = F.softmax(self.weight_fc(combined_encoded), dim=0).view(batch_size, num_frames, 1)  # (batch_size, num_frames, 1)
-
-#         # Weighted Instances
-#         weighted_instances = combined_encoded.view(batch_size, num_frames, -1) * aij
-
-#         # 프레임 수준 예측 계산
-#         frame_predictions = torch.sigmoid(weighted_instances.sum(dim=2))  # (batch_size, num_frames)
-
-#         # 비디오 수준 예측 계산 (평균)
-#         bag_prediction = frame_predictions.mean(dim=1)  # (batch_size)
-
-#         return bag_prediction
+#         if final_bag_prediction.isnan().any() or ((final_bag_prediction < 0) | (final_bag_prediction > 1)).any():
+#             raise ValueError("Invalid bag_prediction values")
+        
+#         return final_bag_prediction, aij
 
 # # S-MIL Loss Function
 # def smil_loss(y_pred, y_true):
@@ -102,28 +203,49 @@
 #     return loss(y_pred, y_true)
 
 
+#--------------------------------------------------------------------------------------
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import timm
 
-# Frame Feature Extractor
-class FrameFeatureExtractor(nn.Module):
-    def __init__(self):
-        super(FrameFeatureExtractor, self).__init__()
-        self.model = timm.create_model('legacy_xception', pretrained=True)
-        self.model.fc = nn.Identity()
-        
-    def forward(self, x):
-        return self.model(x)
+def replace_nan_to_zero(tensor):
+    if tensor.isnan().any():
+        tensor[tensor.isnan()] = 0.0000000001
+    return tensor
 
-# Spatial-Temporal Encoding
+class FrameFeatureExtractor(nn.Module):
+    def __init__(self, weight_path):
+        super(FrameFeatureExtractor, self).__init__()
+        self.model = timm.create_model('tf_efficientnet_b7_ns', pretrained=False)
+        
+        # Load the weights from the provided path
+        checkpoint = torch.load(weight_path)
+        weights = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+
+        # Remove 'encoder.' or 'module.encoder.' prefix if exists
+        weights = {k.replace('encoder.', '').replace('module.', ''): v for k, v in weights.items() if 'epoch' not in k and 'bce_best' not in k}
+
+        weights.pop("fc.weight", None)
+        weights.pop("fc.bias", None)
+        
+        # Load the weights into the model
+        self.model.load_state_dict(weights, strict=True)
+        
+        # Remove the final classification layer
+        self.model.classifier = nn.Identity()
+
+    def forward(self, x):
+        x = self.model(x)
+        x = replace_nan_to_zero(x)
+        return x
+
 class SpatialTemporalEncoding(nn.Module):
-    def __init__(self, input_size=2048):
+    def __init__(self, input_size=2560):  # EfficientNet-B7 output size
         super(SpatialTemporalEncoding, self).__init__()
         self.conv1d_k1 = nn.Conv1d(input_size, 512, kernel_size=1, padding=0)
-        self.conv1d_k2 = nn.Conv1d(input_size, 512, kernel_size=3, padding=1)
-        self.conv1d_k3 = nn.Conv1d(input_size, 512, kernel_size=5, padding=2)
+        self.conv1d_k2 = nn.Conv1d(input_size, 512, kernel_size=2, padding=1)
+        self.conv1d_k3 = nn.Conv1d(input_size, 512, kernel_size=3, padding=1)
         self.relu = nn.ReLU()
 
     def forward(self, x):
@@ -132,49 +254,69 @@ class SpatialTemporalEncoding(nn.Module):
         x_k3 = self.relu(self.conv1d_k3(x))
         return x_k1, x_k2, x_k3
 
-# S-MIL Model
 class SMILModel(nn.Module):
     def __init__(self, frame_feature_extractor):
         super(SMILModel, self).__init__()
         self.frame_feature_extractor = frame_feature_extractor
-        self.spatial_temporal_encoding = SpatialTemporalEncoding(input_size=2048)
-        self.weight_fc = nn.Linear(512 * 3, 1)  # Weighting for instance embeddings
+        self.spatial_temporal_encoding = SpatialTemporalEncoding(input_size=2560)
+        self.fc_alpha = nn.Linear(512, 1)
+        self.fc_w = nn.Linear(512, 1)
+        nn.init.xavier_uniform_(self.fc_alpha.weight)
+        nn.init.xavier_uniform_(self.fc_w.weight)
 
     def forward(self, x):
-        batch_size, num_frames, c, h, w = x.size()  # (8, 250, 3, 255, 255)
-        x = x.view(-1, c, h, w)  # Flatten all frames into a single batch (2000, 3, 255, 255)
-        frame_features = self.frame_feature_extractor(x)  # Extract frame features
-        frame_features = frame_features.view(batch_size, num_frames, -1)  # Reshape to (8, 250, 2048)
+        batch_size, num_frames, c, h, w = x.size()
 
+        frame_features_list = []
+        for i in range(batch_size):
+            frame_features = self.frame_feature_extractor(x[i])
+            frame_features_list.append(frame_features)
+        
+        frame_features = torch.stack(frame_features_list)
+        frame_features = frame_features.view(batch_size, num_frames, -1)
+        frame_features = replace_nan_to_zero(frame_features)
+        
         # Spatial-Temporal Encoding
-        x_k1, x_k2, x_k3 = self.spatial_temporal_encoding(frame_features.permute(0, 2, 1))  # (8, 2048, 250)
+        x_k1, x_k2, x_k3 = self.spatial_temporal_encoding(frame_features.permute(0, 2, 1))
 
-        # Max Pooling
-        x_k1 = F.max_pool1d(x_k1, kernel_size=x_k1.size(2)).squeeze(2)  # (8, 512)
-        x_k2 = F.max_pool1d(x_k2, kernel_size=x_k2.size(2)).squeeze(2)  # (8, 512)
-        x_k3 = F.max_pool1d(x_k3, kernel_size=x_k3.size(2)).squeeze(2)  # (8, 512)
+        all_aij = []
+        all_pij = []
 
-        # Dimension Expansion
-        x_k1 = x_k1.unsqueeze(1).repeat(1, num_frames, 1)  # (8, 250, 512)
-        x_k2 = x_k2.unsqueeze(1).repeat(1, num_frames, 1)  # (8, 250, 512)
-        x_k3 = x_k3.unsqueeze(1).repeat(1, num_frames, 1)  # (8, 250, 512)
+        for x_k in [x_k1, x_k2, x_k3]:
+            combined_encoded = replace_nan_to_zero(x_k)
+            
+            # Calculate alpha_i^j
+            alpha_logits = self.fc_alpha(combined_encoded.permute(0, 2, 1))  # (batch_size, num_frames, 1)
+            aij = F.softmax(alpha_logits, dim=1).permute(0, 2, 1)  # (batch_size, 1, num_frames)
+            all_aij.append(aij.squeeze(1))  # (batch_size, num_frames)
 
-        # Combine Encoded Features
-        combined_encoded = torch.cat((x_k1, x_k2, x_k3), dim=2)  # (8, 250, 1536)
+            # Calculate p_i^j
+            w_logits = self.fc_w(combined_encoded.permute(0, 2, 1))  # (batch_size, num_frames, 1)
+            p_i_j = torch.sigmoid(w_logits).squeeze(2)  # (batch_size, num_frames)
+            all_pij.append(p_i_j)
+            
+        # Find the maximum num_frames across all batches
+        max_num_frames = max([tensor.size(1) for tensor in all_aij])
 
-        # Weight Calculation
-        aij = F.softmax(self.weight_fc(combined_encoded), dim=1).view(batch_size, num_frames, 1)  # (8, 250, 1)
-        weighted_instances = combined_encoded * aij  # (8, 250, 1536)
+        # Pad all tensors to the same size
+        all_aij = [F.pad(tensor, (0, max_num_frames - tensor.size(1)), 'constant', 0) for tensor in all_aij]
+        all_pij = [F.pad(tensor, (0, max_num_frames - tensor.size(1)), 'constant', 0) for tensor in all_pij]
+        
+        all_aij = torch.stack(all_aij)  # (3, batch_size, num_frames)
+        all_pij = torch.stack(all_pij)  # (3, batch_size, num_frames)
 
-        # Frame-Level Predictions
-        frame_predictions = torch.sigmoid(weighted_instances.sum(dim=2))  # (8, 250)
-
-        # Bag-Level Predictions (Average)
-        bag_prediction = frame_predictions.mean(dim=1)  # (8)
-
-        return bag_prediction
+        # Final bag prediction using the provided formula
+        weighted_p_i_j = torch.prod((1 / all_pij - 1).pow(all_aij), dim=2)  # (3, batch_size)
+        bag_predictions = 1 / (1 + weighted_p_i_j)  # (3, batch_size)
+        print(f"bag_predictions: {bag_predictions}")
+        final_bag_prediction = torch.prod(bag_predictions, dim=0)  # (batch_size)
+        print(f"final_bag_prediction: {final_bag_prediction}")
+        if final_bag_prediction.isnan().any() or ((final_bag_prediction < 0) | (final_bag_prediction > 1)).any():
+            raise ValueError("Invalid bag_prediction values")
+        
+        return final_bag_prediction, all_aij
 
 # S-MIL Loss Function
-def smil_loss(y_pred, y_true):
-    loss = nn.BCELoss()
-    return loss(y_pred, y_true)
+def smil_loss(y_pred, y_true, weight):
+    pos_weight = torch.tensor([weight], device=y_pred.device)
+    return F.binary_cross_entropy_with_logits(y_pred, y_true, pos_weight=pos_weight)

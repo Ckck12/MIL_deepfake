@@ -1,0 +1,8 @@
+video_name,confidence,prediction,label
+42_real,0.39699918031692505,0,0.0
+13_real,0.3729389011859894,0,0.0
+0_fake_video_fake_audio,0.30666589736938477,0,1.0
+18_fake_video_fake_audio,0.17008250951766968,0,1.0
+34_real,0.15388010442256927,0,0.0
+2_fake_video_fake_audio,0.29093652963638306,0,1.0
+7_fake_video_fake_audio,0.22409190237522125,0,1.0
