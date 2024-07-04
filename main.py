@@ -19,16 +19,18 @@ def main():
 
     print(f"local_rank: {local_rank}")
     torch.cuda.set_device(local_rank)
+    torch.cuda.empty_cache()
+    
     
     train_base_path = '/home/parkchan/Small_DFDC'
     test_base_path = '/media/NAS/DATASET/1mDFDC/video_level_1mdfdc/validation_set/Test_DFDC'
-    batch_size = 8
+    batch_size = 4
     num_epochs = 30
     num_workers = 32
     pin_memory = True
     shuffle = False
     validation_split = 0.2
-    train_limit = 700
+    train_limit = 100
 
     transform = transforms.Compose([
         transforms.Resize((80, 80)),
@@ -50,8 +52,11 @@ def main():
 
     weight_root = '/media/NAS/USERS/inho/df_detection/pretrained_model'
     weight_path = os.path.join(weight_root, 'efficient/final_999_DeepFakeClassifier_tf_efficientnet_b7_ns_0_23')
+    
+    # Load weights directly to the correct GPU
+    state_dict = torch.load(weight_path, map_location=lambda storage, loc: storage.cuda(local_rank))
 
-    frame_feature_extractor = FrameFeatureExtractor(weight_path)
+    frame_feature_extractor = FrameFeatureExtractor(state_dict)
     model = SMILModel(frame_feature_extractor)
     model = model.to(local_rank)
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)

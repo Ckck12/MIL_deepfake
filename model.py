@@ -215,13 +215,12 @@ def replace_nan_to_zero(tensor):
     return tensor
 
 class FrameFeatureExtractor(nn.Module):
-    def __init__(self, weight_path):
+    def __init__(self, state_dict):
         super(FrameFeatureExtractor, self).__init__()
         self.model = timm.create_model('tf_efficientnet_b7_ns', pretrained=False)
         
-        # Load the weights from the provided path
-        checkpoint = torch.load(weight_path)
-        weights = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+        # Load the weights from the provided state_dict
+        weights = state_dict['state_dict'] if 'state_dict' in state_dict else state_dict
 
         # Remove 'encoder.' or 'module.encoder.' prefix if exists
         weights = {k.replace('encoder.', '').replace('module.', ''): v for k, v in weights.items() if 'epoch' not in k and 'bce_best' not in k}
